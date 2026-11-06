@@ -34,6 +34,7 @@ local D = {
     purge_errors = { enabled = true, keep_lines = 3, min_bytes = 2000, protected_tools = {} },
   },
   prompt_hint = true,
+  compress_tool = true,
   persist_stats = true,
   max_seen = 2000,
 }
@@ -511,16 +512,19 @@ local function on_output(prev, out, ctx)
     or type(out) ~= "table"
     or ctx.output_mode == "full"
     or (not cfg.allow_subagents and ctx.task_id and ctx.task_id ~= "main")
-    or (cfg.manual_mode and not cfg.automatic_strategies)
     or protected(ctx)
   then
     return prev(out, ctx)
   end
   local s = st(ctx.session_id)
+  local forced = s.force
+  if not forced and cfg.manual_mode and not cfg.automatic_strategies then
+    return prev(out, ctx)
+  end
   s.stats.calls = s.stats.calls + 1
   totals.calls = totals.calls + 1
   if not dedupe(s, out, ctx) then
-    local level = pressure(s)
+    local level = forced or pressure(s)
     purge(s, out, level)
     trim(s, out, level)
   end
@@ -568,14 +572,69 @@ local function hint()
   }
   local id = maki.session.current()
   local s = id and S[id]
-  if s and pressure(s) ~= "none" then
+  local level = (s and pressure(s)) or "none"
+  if level ~= "none" then
     lines[#lines + 1] =
       "Context use is above the pruning threshold: prefer focused reads and searches over large dumps."
+  end
+  if cfg.compress_tool and (level ~= "none" or (cfg.manual_mode and not cfg.automatic_strategies)) then
+    lines[#lines + 1] =
+      "If context is still too large for what you need to read, call the compress tool: it forces aggressive pruning of later tool results in this session (already-sent content is unaffected)."
   end
   return table.concat(lines, "\n")
 end
 
 maki.api.register_prompt_hint({ slot = "tool_usage", content = hint })
+
+maki.api.register_tool({
+  name = "compress",
+  kind = "context",
+  description = [[Force dcp to prune this session's tool output.
+
+Use it when context use is high but you still need to read more: later tool
+results in this session are then pruned at the chosen level immediately,
+instead of waiting for the automatic context threshold. It does not shrink
+content that is already in the context.
+
+- "hard" (default): keep only the hard_max_lines / hard_max_bytes of each result.
+- "soft": keep the softer soft_max_lines / soft_max_bytes limits.
+- "auto": clear the override and return to threshold-driven pruning.]],
+  schema = {
+    type = "object",
+    properties = {
+      level = {
+        type = "string",
+        enum = { "hard", "soft", "auto" },
+        description = "Pruning level for later tool results in this session. Default: hard.",
+      },
+    },
+  },
+  handler = function(input, ctx)
+    if not cfg.compress_tool then
+      return { llm_output = "error: the compress tool is disabled in dcp settings", is_error = true }
+    end
+    local level = (input and input.level) or "hard"
+    if level ~= "hard" and level ~= "soft" and level ~= "auto" then
+      return { llm_output = "error: level must be hard, soft or auto", is_error = true }
+    end
+    local sid = ctx and (ctx.session_id or ctx.session)
+    if type(sid) ~= "string" then
+      sid = maki.session.current()
+    end
+    if type(sid) ~= "string" then
+      return { llm_output = "error: no active session", is_error = true }
+    end
+    local s = st(sid)
+    s.force = level == "auto" and nil or level
+    local out = { "dcp: pruning for later tool results is now " .. (s.force or "auto (threshold)") .. "." }
+    if s.cs and s.cw then
+      out[#out + 1] = string.format("Context: %d of %d tokens (pressure: %s).", s.cs, s.cw, pressure(s))
+    elseif s.cs then
+      out[#out + 1] = string.format("Context: %d tokens.", s.cs)
+    end
+    return { llm_output = table.concat(out, "\n") }
+  end,
+})
 
 local function bytes(n)
   n = n or 0
@@ -637,6 +696,7 @@ local function stats_lines()
   if s then
     head("Session")
     kv("turn / sigs", s.turn .. " / " .. #s.order)
+    kv("pruning", s.force and (s.force .. " (forced)") or "threshold")
     kv(
       "context",
       (s.cs and s.cw and s.cw > 0)
@@ -726,6 +786,7 @@ local FIELDS = {
   { "purge keep lines", { "strategies", "purge_errors", "keep_lines" }, "int", 1 },
   { "purge min bytes", { "strategies", "purge_errors", "min_bytes" }, "int", 0 },
   { "prompt hint", { "prompt_hint" }, "bool" },
+  { "compress tool", { "compress_tool" }, "bool" },
   { "persist stats", { "persist_stats" }, "bool" },
   { "max seen", { "max_seen" }, "int", 1 },
   { "protected tools", { "protected_tools" }, "list" },
