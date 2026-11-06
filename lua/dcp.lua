@@ -248,12 +248,13 @@ end
 
 local totals = zero()
 local S = {}
+local limits = {}
 
 local function st(id)
   id = id or "default"
   local s = S[id]
   if not s then
-    s = { id = id, turn = 0, poll = 0, seen = {}, order = {}, stats = zero() }
+    s = { id = id, turn = 0, poll = 0, seen = {}, order = {}, stats = zero(), user_limit_ratio = limits[id] }
     S[id] = s
   end
   return s
@@ -386,6 +387,51 @@ local function save_stats()
   if ok then
     pcall(maki.fs.mkdir, maki.fs.dirname(p), { parents = true })
     pcall(maki.fs.write, p, encoded)
+  end
+end
+
+local function limits_path()
+  local ok, dir = pcall(maki.env.state_dir)
+  return ok and dir and maki.fs.joinpath(dir, "dcp", "limits.json") or nil
+end
+
+local function save_limits()
+  if not cfg.persist_stats then
+    return
+  end
+  local p = limits_path()
+  if not p then
+    return
+  end
+  local ok, encoded = pcall(maki.json.encode, limits)
+  if ok then
+    pcall(maki.fs.mkdir, maki.fs.dirname(p), { parents = true })
+    pcall(maki.fs.write, p, encoded)
+  end
+end
+
+local function load_limits()
+  if not cfg.persist_stats then
+    return
+  end
+  local p = limits_path()
+  if not p or not maki.fs.metadata(p) then
+    return
+  end
+  local text = maki.fs.read(p)
+  local ok, v = pcall(maki.json.decode, text or "")
+  if not ok or type(v) ~= "table" then
+    return
+  end
+  for id, ratio in pairs(v) do
+    if type(id) == "string" and type(ratio) == "number" and ratio > 0 then
+      limits[id] = ratio
+    end
+  end
+  for id, s in pairs(S) do
+    if not s.user_limit_ratio then
+      s.user_limit_ratio = limits[id]
+    end
   end
 end
 
@@ -549,6 +595,8 @@ maki.api.create_autocmd({ "TurnEnd", "AutoCompacting", "CompactionDone" }, {
     s.poll = os.time()
     if ev.event == "AutoCompacting" and d.context_size and d.context_window and d.context_window > 0 then
       s.user_limit_ratio = d.context_size / d.context_window
+      limits[s.id] = s.user_limit_ratio
+      save_limits()
     end
     if ev.event == "TurnEnd" then
       s.turn = s.turn + 1
@@ -568,6 +616,10 @@ maki.api.create_autocmd({ "SessionEnd", "SessionReset" }, {
     local id = (ev.data or {}).session_id
     if id then
       S[id] = nil
+      if limits[id] then
+        limits[id] = nil
+        save_limits()
+      end
     end
   end,
 })
@@ -1084,6 +1136,7 @@ maki.api.register_command({
 maki.async.spawn(function()
   load_config()
   load_stats()
+  load_limits()
 end)
 dbg("loaded (" .. (cfg.enabled and "on" or "off") .. ")")
 
