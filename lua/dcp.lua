@@ -600,34 +600,6 @@ local function count(n)
   return tostring(n)
 end
 
-local function status()
-  local id = maki.session.current()
-  local s = id and S[id]
-  local ctx = ""
-  if s and s.cs and s.cw and s.cw > 0 then
-    ctx = string.format(" | ctx %d%% (%d/%d)", math.floor(s.cs / s.cw * 100), s.cs, s.cw)
-  end
-  return string.format(
-    "dcp %s | calls %d, saved %s (~%d tok) | dup %d, trim %d, err %d%s",
-    cfg.enabled and "on" or "off",
-    totals.calls,
-    bytes(totals.bytes_saved),
-    tok(totals.bytes_saved),
-    totals.duplicates,
-    totals.truncated,
-    totals.errors,
-    ctx
-  )
-end
-
-maki.api.register_command({
-  name = "/dcp",
-  description = "Show dcp context-pruning status and stats",
-  handler = function()
-    maki.notify(status(), "info", { title = "dcp" })
-  end,
-})
-
 local function reset_stats()
   totals = zero()
   for _, s in pairs(S) do
@@ -1023,34 +995,11 @@ maki.api.register_command({
 })
 
 maki.api.register_command({
-  name = "/dcp-toggle",
-  description = "Enable or disable automatic context pruning",
-  handler = function()
-    cfg.enabled = not cfg.enabled
-    save_config()
-    maki.notify("dcp " .. (cfg.enabled and "enabled" or "disabled"), "info", { title = "dcp" })
-  end,
-})
-
-maki.api.register_command({
   name = "/dcp-reset",
   description = "Clear dcp pruning statistics",
   handler = function()
     reset_stats()
     maki.notify("dcp stats cleared", "info", { title = "dcp" })
-  end,
-})
-
-maki.api.register_command({
-  name = "/dcp-compress",
-  description = "Run maki's native compaction (dcp-compress alias)",
-  handler = function()
-    local ok, err = maki.api.run_command("/compact")
-    if ok then
-      maki.notify("compaction requested", "info", { title = "dcp" })
-    else
-      maki.notify("could not run /compact: " .. tostring(err), "error", { title = "dcp" })
-    end
   end,
 })
 
