@@ -602,7 +602,8 @@ local function stats_lines()
     items[#items + 1] = { k, tostring(v) }
   end
 
-  head("dcp · context pruning  " .. (cfg.enabled and "on" or "off"))
+  head("Dynamic Context Pruning (DCP)")
+  kv("enabled", cfg.enabled and "on" or "off")
   kv("mode", (cfg.manual_mode and not cfg.automatic_strategies) and "manual" or "automatic")
 
   head("Totals")
