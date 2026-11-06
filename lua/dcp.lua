@@ -575,7 +575,7 @@ local function hint()
   local level = (s and pressure(s)) or "none"
   if level ~= "none" then
     lines[#lines + 1] =
-      "Context use is above the pruning threshold: prefer focused reads and searches over large dumps."
+      "User limit has been triggered, please compress asap."
   end
   if cfg.compress_tool and (level ~= "none" or (cfg.manual_mode and not cfg.automatic_strategies)) then
     lines[#lines + 1] =
