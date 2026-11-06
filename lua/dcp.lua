@@ -644,6 +644,22 @@ local function stats_lines()
   return L
 end
 
+-- The float draws no inner margin, so add one here: two spaces on each side
+-- and a blank line top and bottom.
+local function padded(lines)
+  local out = { { { "" } } }
+  for _, line in ipairs(lines) do
+    local l = { { "  " } }
+    for _, span in ipairs(line) do
+      l[#l + 1] = span
+    end
+    l[#l + 1] = { "  " }
+    out[#out + 1] = l
+  end
+  out[#out + 1] = { { "" } }
+  return out
+end
+
 local function stats_window_size(lines)
   local size = maki.ui.terminal_size()
   local width = 0
@@ -654,17 +670,18 @@ local function stats_window_size(lines)
     end
     width = math.max(width, n)
   end
-  local height = math.min(#lines + 2, size.rows - 4)
-  return math.min(width + 4, size.cols - 4), math.max(3, height)
+  local w = math.min(math.max(width + 4, 44), size.cols - 4)
+  local h = math.min(math.max(#lines + 2, 12), size.rows - 2)
+  return math.max(20, w), math.max(10, h)
 end
 
 local function open_stats_window()
   local buf = maki.ui.buf()
-  local width, height = stats_window_size(stats_lines())
+  local width, height = stats_window_size(padded(stats_lines()))
   local rows = math.max(3, height - 2)
   local offset, total = 0, 0
   local function render()
-    local all = stats_lines()
+    local all = padded(stats_lines())
     total = #all
     if total > rows then
       offset = math.min(offset, total - rows)
@@ -693,7 +710,7 @@ local function open_stats_window()
     if not ev or ev.type == "close" then
       break
     elseif ev.type == "resize" then
-      width, height = stats_window_size(stats_lines())
+      width, height = stats_window_size(padded(stats_lines()))
       rows = math.max(3, height - 2)
       win:set_config({ width = width, height = height })
       render()
