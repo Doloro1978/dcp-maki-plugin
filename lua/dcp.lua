@@ -49,8 +49,10 @@ local function merge(dst, src)
 end
 
 local cfg = maki.deepcopy(D)
+local user_opts
 
 function M.setup(opts)
+  user_opts = opts
   merge(cfg, opts)
   return cfg
 end
@@ -377,6 +379,40 @@ local function save_stats()
   end
 end
 
+local function config_path()
+  local ok, dir = pcall(maki.env.state_dir)
+  return ok and dir and maki.fs.joinpath(dir, "dcp", "config.json") or nil
+end
+
+local function load_config()
+  local p = config_path()
+  if not p or not maki.fs.metadata(p) then
+    return
+  end
+  local text = maki.fs.read(p)
+  local ok, v = pcall(maki.json.decode, text or "")
+  if ok and type(v) == "table" then
+    merge(cfg, v)
+    -- Saved UI edits load after require() returns, so re-apply init.lua opts
+    -- last to keep them authoritative.
+    if user_opts then
+      merge(cfg, user_opts)
+    end
+  end
+end
+
+local function save_config()
+  local p = config_path()
+  if not p then
+    return
+  end
+  local ok, encoded = pcall(maki.json.encode, cfg)
+  if ok then
+    pcall(maki.fs.mkdir, maki.fs.dirname(p), { parents = true })
+    pcall(maki.fs.write, p, encoded)
+  end
+end
+
 local function bump(s, before, after, kind)
   local saved = #before - #after
   if saved <= 0 then
@@ -551,6 +587,19 @@ local function bytes(n)
   return n .. " B"
 end
 
+local function count(n)
+  if type(n) ~= "number" then
+    return tostring(n)
+  end
+  if n >= 1e6 then
+    return string.format("%.1fM", n / 1e6)
+  elseif n >= 1000 then
+    local v = n / 1000
+    return v % 1 == 0 and string.format("%dK", v) or string.format("%.1fK", v)
+  end
+  return tostring(n)
+end
+
 local function status()
   local id = maki.session.current()
   local s = id and S[id]
@@ -619,14 +668,14 @@ local function stats_lines()
     kv(
       "context",
       (s.cs and s.cw and s.cw > 0)
-          and string.format("%d/%d (%d%%)", s.cs, s.cw, math.floor(s.cs / s.cw * 100))
+          and string.format("%s/%s (%d%%)", count(s.cs), count(s.cw), math.floor(s.cs / s.cw * 100))
         or "unknown"
     )
     kv("saved", string.format("%s (~%d tok)", bytes(s.stats.bytes_saved), tok(s.stats.bytes_saved)))
   end
 
   head("Config")
-  kv("min / max", tostring(cfg.min_context_limit) .. " / " .. tostring(cfg.max_context_limit))
+  kv("token limits", count(cfg.min_context_limit) .. " / " .. count(cfg.max_context_limit))
   kv(
     "budgets",
     string.format(
@@ -686,6 +735,237 @@ local function stats_window_size(lines)
   return math.max(20, w), math.max(10, h)
 end
 
+local FIELDS = {
+  { "enabled", { "enabled" }, "bool" },
+  { "debug", { "debug" }, "bool" },
+  { "allow subagents", { "allow_subagents" }, "bool" },
+  { "manual mode", { "manual_mode" }, "bool" },
+  { "auto strategies", { "automatic_strategies" }, "bool" },
+  { "min context", { "min_context_limit" }, "limit" },
+  { "max context", { "max_context_limit" }, "limit" },
+  { "soft max lines", { "soft_max_lines" }, "int", 1 },
+  { "soft max bytes", { "soft_max_bytes" }, "int", 1 },
+  { "hard max lines", { "hard_max_lines" }, "int", 1 },
+  { "hard max bytes", { "hard_max_bytes" }, "int", 1 },
+  { "always max bytes", { "always_max_bytes" }, "int", 0 },
+  { "dedupe enabled", { "strategies", "deduplication", "enabled" }, "bool" },
+  { "dedupe mode", { "strategies", "deduplication", "mode" }, "enum", { "identical", "input" } },
+  { "purge enabled", { "strategies", "purge_errors", "enabled" }, "bool" },
+  { "purge keep lines", { "strategies", "purge_errors", "keep_lines" }, "int", 1 },
+  { "purge min bytes", { "strategies", "purge_errors", "min_bytes" }, "int", 0 },
+  { "prompt hint", { "prompt_hint" }, "bool" },
+  { "persist stats", { "persist_stats" }, "bool" },
+  { "max seen", { "max_seen" }, "int", 1 },
+  { "protected tools", { "protected_tools" }, "list" },
+  { "protected files", { "protected_file_patterns" }, "list" },
+  { "protected kinds", { "protected_kinds" }, "list" },
+  { "dedupe protect", { "strategies", "deduplication", "protected_tools" }, "list" },
+  { "purge protect", { "strategies", "purge_errors", "protected_tools" }, "list" },
+}
+
+local function field_value(field)
+  local v = cfg
+  for i = 1, #field[2] - 1 do
+    v = v[field[2][i]]
+  end
+  return v[field[2][#field[2]]]
+end
+
+local function set_field(field, value)
+  local t = cfg
+  for i = 1, #field[2] - 1 do
+    t = t[field[2][i]]
+  end
+  t[field[2][#field[2]]] = value
+end
+
+local function field_text(value)
+  if type(value) == "table" then
+    return #value .. " items"
+  elseif type(value) == "boolean" then
+    return value and "on" or "off"
+  end
+  return tostring(value)
+end
+
+local function settings_lines(sel)
+  local L = { { { "Dynamic Context Pruning (DCP)", "bold" } } }
+  local kw = 0
+  for _, f in ipairs(FIELDS) do
+    kw = math.max(kw, #f[1])
+  end
+  local fmt = "  %-" .. (kw + 2) .. "s"
+  for i, f in ipairs(FIELDS) do
+    local marker = i == sel and "> " or "  "
+    local style = i == sel and "bold" or "dim"
+    L[#L + 1] = { { marker .. string.format(fmt, f[1]), style }, { field_text(field_value(f)) } }
+  end
+  return L
+end
+
+local function cycle_field(field)
+  local value = field_value(field)
+  if field[3] == "bool" then
+    set_field(field, not value)
+  elseif field[3] == "enum" then
+    local values = field[4]
+    local idx = 1
+    for i, v in ipairs(values) do
+      if v == value then
+        idx = i
+      end
+    end
+    set_field(field, values[idx % #values + 1])
+  else
+    return false
+  end
+  save_config()
+  return true
+end
+
+local function prompt_field(label, initial)
+  local TextInput = require("maki.text_input")
+  local ti = TextInput.new()
+  ti:insert_text(initial)
+  local buf = maki.ui.buf()
+  local size = maki.ui.terminal_size()
+  local width = math.min(math.max(#label + #initial + 12, 44), size.cols - 4)
+  local function draw()
+    buf:set_lines(ti:render(label .. ": ", #label + 2, width - 2).lines)
+  end
+  draw()
+  local win = maki.ui.open_win(buf, {
+    title = " dcp edit ",
+    width = width,
+    height = 5,
+    border = "rounded",
+    footer = { { "<CR>", "save" }, { "<Esc>", "cancel" } },
+  })
+  local result
+  while win:is_open() do
+    local ev = win:recv()
+    if not ev or ev.type == "close" then
+      break
+    elseif ev.type == "key" then
+      local k = ev.key
+      if k == "<Esc>" then
+        break
+      elseif k == "<CR>" then
+        result = ti:value()
+        break
+      elseif ti:handle_key(k) ~= TextInput.Result.IGNORED then
+        draw()
+      end
+    end
+  end
+  win:close()
+  return result
+end
+
+local function apply_field(field)
+  local kind = field[3]
+  if kind == "bool" or kind == "enum" then
+    return cycle_field(field)
+  end
+  local current = field_value(field)
+  local initial = type(current) == "table" and table.concat(current, ", ") or tostring(current)
+  local raw = prompt_field(field[1], initial)
+  if not raw then
+    return false
+  end
+  raw = raw:match("^%s*(.-)%s*$")
+  if kind == "int" then
+    local n = tonumber(raw)
+    if not n then
+      maki.notify("not a number: " .. raw, "error", { title = "dcp" })
+      return false
+    end
+    n = math.floor(n)
+    if field[4] and n < field[4] then
+      n = field[4]
+    end
+    set_field(field, n)
+  elseif kind == "limit" then
+    if raw:match("^%d+%%$") then
+      set_field(field, raw)
+    else
+      local n = tonumber(raw)
+      if not n then
+        maki.notify("use a number or NN%", "error", { title = "dcp" })
+        return false
+      end
+      set_field(field, math.floor(n))
+    end
+  elseif kind == "list" then
+    local list = {}
+    for item in raw:gmatch("[^,]+") do
+      item = item:match("^%s*(.-)%s*$")
+      if item ~= "" then
+        list[#list + 1] = item
+      end
+    end
+    set_field(field, list)
+  else
+    set_field(field, raw)
+  end
+  save_config()
+  return true
+end
+
+local function open_settings_window()
+  local sel = 1
+  local buf = maki.ui.buf()
+  local function render()
+    buf:set_lines(padded(settings_lines(sel)))
+  end
+  local width, height = stats_window_size(padded(settings_lines(sel)))
+  render()
+  local win = maki.ui.open_win(buf, {
+    title = " dcp config ",
+    width = width,
+    height = height,
+    border = "rounded",
+    footer = { { "j/k", "move" }, { "<CR>", "edit" }, { "<Space>", "toggle" }, { "q", "close" } },
+  })
+  while win:is_open() do
+    local ev = win:recv()
+    if not ev or ev.type == "close" then
+      break
+    elseif ev.type == "resize" then
+      width, height = stats_window_size(padded(settings_lines(sel)))
+      win:set_config({ width = width, height = height })
+    elseif ev.type == "key" then
+      local k = ev.key
+      if k == "q" or k == "<Esc>" then
+        break
+      elseif k == "j" or k == "<Down>" then
+        if sel < #FIELDS then
+          sel = sel + 1
+          render()
+        end
+      elseif k == "k" or k == "<Up>" then
+        if sel > 1 then
+          sel = sel - 1
+          render()
+        end
+      elseif k == "<CR>" then
+        if apply_field(FIELDS[sel]) then
+          width, height = stats_window_size(padded(settings_lines(sel)))
+          win:set_config({ width = width, height = height })
+          render()
+        end
+      elseif k == "<Space>" then
+        local f = FIELDS[sel]
+        if f[3] == "bool" or f[3] == "enum" then
+          cycle_field(f)
+          render()
+        end
+      end
+    end
+  end
+  win:close()
+end
+
 local function open_stats_window()
   local buf = maki.ui.buf()
   local function render()
@@ -698,8 +978,9 @@ local function open_stats_window()
     width = width,
     height = height,
     border = "rounded",
-    footer = { { "t", "toggle" }, { "q", "close" } },
+    footer = { { "e", "config" }, { "t", "toggle" }, { "q", "close" } },
   })
+  local edit = false
   while win:is_open() do
     local ev = win:recv()
     if not ev or ev.type == "close" then
@@ -711,8 +992,12 @@ local function open_stats_window()
       local k = ev.key
       if k == "q" or k == "<Esc>" then
         break
+      elseif k == "e" then
+        edit = true
+        break
       elseif k == "t" then
         cfg.enabled = not cfg.enabled
+        save_config()
         width, height = stats_window_size(padded(stats_lines()))
         win:set_config({ width = width, height = height })
         render()
@@ -720,6 +1005,9 @@ local function open_stats_window()
     end
   end
   win:close()
+  if edit then
+    open_settings_window()
+  end
 end
 
 maki.api.register_command({
@@ -729,10 +1017,17 @@ maki.api.register_command({
 })
 
 maki.api.register_command({
+  name = "/dcp-config",
+  description = "Open the dcp settings window",
+  handler = open_settings_window,
+})
+
+maki.api.register_command({
   name = "/dcp-toggle",
   description = "Enable or disable automatic context pruning",
   handler = function()
     cfg.enabled = not cfg.enabled
+    save_config()
     maki.notify("dcp " .. (cfg.enabled and "enabled" or "disabled"), "info", { title = "dcp" })
   end,
 })
@@ -761,7 +1056,10 @@ maki.api.register_command({
 
 -- File APIs are async; they yield, so they cannot run at the plugin top level
 -- (a /reload loads the plugin from a C-call boundary). Spawn a task instead.
-maki.async.spawn(load_stats)
+maki.async.spawn(function()
+  load_config()
+  load_stats()
+end)
 dbg("loaded (" .. (cfg.enabled and "on" or "off") .. ")")
 
 return M
