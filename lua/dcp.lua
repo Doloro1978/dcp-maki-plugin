@@ -579,12 +579,145 @@ maki.api.register_command({
   end,
 })
 
+local function reset_stats()
+  totals = zero()
+  for _, s in pairs(S) do
+    s.stats = zero()
+    s.seen = {}
+    s.order = {}
+  end
+  local p = stats_path()
+  if p then
+    pcall(maki.fs.rm, p)
+  end
+end
+
+local function stats_lines()
+  local L = {}
+  local function head(text)
+    L[#L + 1] = { { text, "bold" } }
+  end
+  local function kv(k, v)
+    L[#L + 1] = { { string.format("  %-16s", k), "dim" }, { tostring(v) } }
+  end
+  local function sep()
+    L[#L + 1] = { { string.rep("─", 52), "dim" } }
+  end
+
+  head("dcp · context pruning")
+  kv("state", cfg.enabled and "on" or "off")
+  kv("automatic", (not cfg.manual_mode or cfg.automatic_strategies) and "yes" or "no")
+
+  sep()
+  head("Totals (process lifetime)")
+  kv("tool calls", totals.calls)
+  kv("pruned results", totals.pruned)
+  kv("saved", string.format("%s (~%d tok)", bytes(totals.bytes_saved), tok(totals.bytes_saved)))
+  kv("duplicates", totals.duplicates)
+  kv("truncated", totals.truncated)
+  kv("errors capped", totals.errors)
+
+  local id = maki.session.current()
+  local s = id and S[id]
+  if s then
+    sep()
+    head("Current session")
+    kv("id", id)
+    kv("turn", s.turn)
+    if s.cs and s.cw and s.cw > 0 then
+      kv("context", string.format("%d / %d (%d%%)", s.cs, s.cw, math.floor(s.cs / s.cw * 100)))
+    else
+      kv("context", "unknown")
+    end
+    kv("signatures", #s.order)
+    kv("saved here", string.format("%s (~%d tok)", bytes(s.stats.bytes_saved), tok(s.stats.bytes_saved)))
+    kv("duplicates here", s.stats.duplicates)
+  end
+
+  sep()
+  head("Config")
+  kv("min context", cfg.min_context_limit)
+  kv("max context", cfg.max_context_limit)
+  kv("soft budget", string.format("%d lines / %d B", cfg.soft_max_lines, cfg.soft_max_bytes))
+  kv("hard budget", string.format("%d lines / %d B", cfg.hard_max_lines, cfg.hard_max_bytes))
+  kv("dedupe", cfg.strategies.deduplication.enabled and cfg.strategies.deduplication.mode or "off")
+  kv("purge errors", cfg.strategies.purge_errors.enabled and (cfg.strategies.purge_errors.keep_lines .. " lines") or "off")
+  return L
+end
+
+local function open_stats_window()
+  local buf = maki.ui.buf()
+  local rows = math.max(3, math.floor(maki.ui.terminal_size().rows * 0.7) - 2)
+  local offset, total = 0, 0
+  local function render()
+    local all = stats_lines()
+    total = #all
+    if total > rows then
+      offset = math.min(offset, total - rows)
+    else
+      offset = 0
+    end
+    local view = {}
+    for i = offset + 1, math.min(total, offset + rows) do
+      view[#view + 1] = all[i]
+    end
+    if total > rows then
+      view[#view + 1] = { { string.format("  %d/%d  j/k scroll", offset + 1, total), "dim" } }
+    end
+    buf:set_lines(view)
+  end
+  render()
+  local win = maki.ui.open_win(buf, {
+    title = " dcp stats ",
+    width = "70%",
+    height = "70%",
+    border = "rounded",
+    footer = { { "j/k", "scroll" }, { "r", "reset" }, { "t", "toggle" }, { "q", "close" } },
+  })
+  while win:is_open() do
+    local ev = win:recv()
+    if not ev or ev.type == "close" then
+      break
+    elseif ev.type == "resize" then
+      rows = math.max(3, math.floor(ev.height * 0.7) - 2)
+      render()
+    elseif ev.type == "key" then
+      local k = ev.key
+      if k == "q" or k == "<Esc>" then
+        break
+      elseif k == "j" or k == "<Down>" then
+        if offset + rows < total then
+          offset = offset + 1
+          render()
+        end
+      elseif k == "k" or k == "<Up>" then
+        if offset > 0 then
+          offset = offset - 1
+          render()
+        end
+      elseif k == "<C-d>" or k == "<PageDown>" then
+        offset = math.min(offset + rows, math.max(0, total - rows))
+        render()
+      elseif k == "<C-u>" or k == "<PageUp>" then
+        offset = math.max(0, offset - rows)
+        render()
+      elseif k == "r" then
+        reset_stats()
+        offset = 0
+        render()
+      elseif k == "t" then
+        cfg.enabled = not cfg.enabled
+        render()
+      end
+    end
+  end
+  win:close()
+end
+
 maki.api.register_command({
   name = "/dcp-stats",
-  description = "Show cumulative dcp pruning savings",
-  handler = function()
-    maki.notify(status(), "info", { title = "dcp" })
-  end,
+  description = "Open the dcp stats window",
+  handler = open_stats_window,
 })
 
 maki.api.register_command({
@@ -600,16 +733,7 @@ maki.api.register_command({
   name = "/dcp-reset",
   description = "Clear dcp pruning statistics",
   handler = function()
-    totals = zero()
-    for _, s in pairs(S) do
-      s.stats = zero()
-      s.seen = {}
-      s.order = {}
-    end
-    local p = stats_path()
-    if p then
-      pcall(maki.fs.rm, p)
-    end
+    reset_stats()
     maki.notify("dcp stats cleared", "info", { title = "dcp" })
   end,
 })
