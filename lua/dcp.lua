@@ -292,6 +292,15 @@ local function pressure(s)
   return "none"
 end
 
+local function user_limit(s)
+  return s
+    and s.user_limit_ratio
+    and s.cs
+    and s.cw
+    and s.cw > 0
+    and s.cs / s.cw >= s.user_limit_ratio
+end
+
 local function paths(input)
   local p = {}
   local function add(v)
@@ -538,6 +547,9 @@ maki.api.create_autocmd({ "TurnEnd", "AutoCompacting", "CompactionDone" }, {
     s.cs = d.context_size or d.context_size_after or s.cs
     s.cw = d.context_window or s.cw
     s.poll = os.time()
+    if ev.event == "AutoCompacting" and d.context_size and d.context_window and d.context_window > 0 then
+      s.user_limit_ratio = d.context_size / d.context_window
+    end
     if ev.event == "TurnEnd" then
       s.turn = s.turn + 1
       if s.turn % 5 == 0 then
@@ -572,12 +584,15 @@ local function hint()
   }
   local id = maki.session.current()
   local s = id and S[id]
-  local level = (s and pressure(s)) or "none"
-  if level ~= "none" then
+  if s then
+    pressure(s)
+  end
+  local hit = user_limit(s)
+  if hit then
     lines[#lines + 1] =
       "User limit has been triggered, please compress asap."
   end
-  if cfg.compress_tool and (level ~= "none" or (cfg.manual_mode and not cfg.automatic_strategies)) then
+  if cfg.compress_tool and (hit or (cfg.manual_mode and not cfg.automatic_strategies)) then
     lines[#lines + 1] =
       "If context is still too large for what you need to read, call the compress tool: it forces aggressive pruning of later tool results in this session (already-sent content is unaffected)."
   end
