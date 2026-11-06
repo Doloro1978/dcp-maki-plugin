@@ -357,7 +357,7 @@ local function load_stats()
   local ok, v = pcall(maki.json.decode, text or "")
   if ok and type(v) == "table" then
     for _, k in ipairs(KEYS) do
-      totals[k] = tonumber(v[k]) or 0
+      totals[k] = math.max(totals[k] or 0, tonumber(v[k]) or 0)
     end
   end
 end
@@ -627,7 +627,9 @@ maki.api.register_command({
   end,
 })
 
-load_stats()
+-- File APIs are async; they yield, so they cannot run at the plugin top level
+-- (a /reload loads the plugin from a C-call boundary). Spawn a task instead.
+maki.async.spawn(load_stats)
 dbg("loaded (" .. (cfg.enabled and "on" or "off") .. ")")
 
 return M
