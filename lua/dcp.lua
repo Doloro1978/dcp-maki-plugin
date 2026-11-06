@@ -598,56 +598,70 @@ local function stats_lines()
     L[#L + 1] = { { text, "bold" } }
   end
   local function kv(k, v)
-    L[#L + 1] = { { string.format("  %-16s", k), "dim" }, { tostring(v) } }
-  end
-  local function sep()
-    L[#L + 1] = { { string.rep("─", 52), "dim" } }
+    L[#L + 1] = { { string.format("  %-13s", k), "dim" }, { tostring(v) } }
   end
 
-  head("dcp · context pruning")
-  kv("state", cfg.enabled and "on" or "off")
-  kv("automatic", (not cfg.manual_mode or cfg.automatic_strategies) and "yes" or "no")
+  head("dcp · context pruning  " .. (cfg.enabled and "on" or "off"))
+  kv("mode", (cfg.manual_mode and not cfg.automatic_strategies) and "manual" or "automatic")
 
-  sep()
-  head("Totals (process lifetime)")
-  kv("tool calls", totals.calls)
-  kv("pruned results", totals.pruned)
+  head("Totals")
+  kv("calls / pruned", totals.calls .. " / " .. totals.pruned)
   kv("saved", string.format("%s (~%d tok)", bytes(totals.bytes_saved), tok(totals.bytes_saved)))
-  kv("duplicates", totals.duplicates)
-  kv("truncated", totals.truncated)
-  kv("errors capped", totals.errors)
+  kv("dup / trim / err", string.format("%d / %d / %d", totals.duplicates, totals.truncated, totals.errors))
 
   local id = maki.session.current()
   local s = id and S[id]
   if s then
-    sep()
-    head("Current session")
-    kv("id", id)
-    kv("turn", s.turn)
-    if s.cs and s.cw and s.cw > 0 then
-      kv("context", string.format("%d / %d (%d%%)", s.cs, s.cw, math.floor(s.cs / s.cw * 100)))
-    else
-      kv("context", "unknown")
-    end
-    kv("signatures", #s.order)
-    kv("saved here", string.format("%s (~%d tok)", bytes(s.stats.bytes_saved), tok(s.stats.bytes_saved)))
-    kv("duplicates here", s.stats.duplicates)
+    head("Session")
+    kv("turn / sigs", s.turn .. " / " .. #s.order)
+    kv(
+      "context",
+      (s.cs and s.cw and s.cw > 0)
+          and string.format("%d/%d (%d%%)", s.cs, s.cw, math.floor(s.cs / s.cw * 100))
+        or "unknown"
+    )
+    kv("saved", string.format("%s (~%d tok)", bytes(s.stats.bytes_saved), tok(s.stats.bytes_saved)))
   end
 
-  sep()
   head("Config")
-  kv("min context", cfg.min_context_limit)
-  kv("max context", cfg.max_context_limit)
-  kv("soft budget", string.format("%d lines / %d B", cfg.soft_max_lines, cfg.soft_max_bytes))
-  kv("hard budget", string.format("%d lines / %d B", cfg.hard_max_lines, cfg.hard_max_bytes))
-  kv("dedupe", cfg.strategies.deduplication.enabled and cfg.strategies.deduplication.mode or "off")
-  kv("purge errors", cfg.strategies.purge_errors.enabled and (cfg.strategies.purge_errors.keep_lines .. " lines") or "off")
+  kv("min / max", tostring(cfg.min_context_limit) .. " / " .. tostring(cfg.max_context_limit))
+  kv(
+    "budgets",
+    string.format(
+      "%d/%dB · %d/%dB",
+      cfg.soft_max_lines,
+      cfg.soft_max_bytes,
+      cfg.hard_max_lines,
+      cfg.hard_max_bytes
+    )
+  )
+  local dedupe = cfg.strategies.deduplication
+  local purge = cfg.strategies.purge_errors
+  kv(
+    "dedupe / purge",
+    (dedupe.enabled and dedupe.mode or "off") .. " / " .. (purge.enabled and (purge.keep_lines .. " lines") or "off")
+  )
   return L
+end
+
+local function stats_window_size(lines)
+  local size = maki.ui.terminal_size()
+  local width = 0
+  for _, line in ipairs(lines) do
+    local n = 0
+    for _, span in ipairs(line) do
+      n = n + maki.ui.display_width(span[1])
+    end
+    width = math.max(width, n)
+  end
+  local height = math.min(#lines + 2, size.rows - 4)
+  return math.min(width + 4, size.cols - 4), math.max(3, height)
 end
 
 local function open_stats_window()
   local buf = maki.ui.buf()
-  local rows = math.max(3, math.floor(maki.ui.terminal_size().rows * 0.7) - 2)
+  local width, height = stats_window_size(stats_lines())
+  local rows = math.max(3, height - 2)
   local offset, total = 0, 0
   local function render()
     local all = stats_lines()
@@ -668,9 +682,9 @@ local function open_stats_window()
   end
   render()
   local win = maki.ui.open_win(buf, {
-    title = " dcp stats ",
-    width = "70%",
-    height = "70%",
+    title = " dcp ",
+    width = width,
+    height = height,
     border = "rounded",
     footer = { { "j/k", "scroll" }, { "r", "reset" }, { "t", "toggle" }, { "q", "close" } },
   })
@@ -679,7 +693,9 @@ local function open_stats_window()
     if not ev or ev.type == "close" then
       break
     elseif ev.type == "resize" then
-      rows = math.max(3, math.floor(ev.height * 0.7) - 2)
+      width, height = stats_window_size(stats_lines())
+      rows = math.max(3, height - 2)
+      win:set_config({ width = width, height = height })
       render()
     elseif ev.type == "key" then
       local k = ev.key
