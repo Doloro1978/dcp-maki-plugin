@@ -593,12 +593,13 @@ local function reset_stats()
 end
 
 local function stats_lines()
-  local L = {}
+  local items, kw = {}, 0
   local function head(text)
-    L[#L + 1] = { { text, "bold" } }
+    items[#items + 1] = { text }
   end
   local function kv(k, v)
-    L[#L + 1] = { { string.format("  %-13s", k), "dim" }, { tostring(v) } }
+    kw = math.max(kw, #k)
+    items[#items + 1] = { k, tostring(v) }
   end
 
   head("dcp · context pruning  " .. (cfg.enabled and "on" or "off"))
@@ -641,6 +642,15 @@ local function stats_lines()
     "dedupe / purge",
     (dedupe.enabled and dedupe.mode or "off") .. " / " .. (purge.enabled and (purge.keep_lines .. " lines") or "off")
   )
+  local fmt = "  %-" .. (kw + 2) .. "s"
+  local L = {}
+  for _, item in ipairs(items) do
+    if item[2] == nil then
+      L[#L + 1] = { { item[1], "bold" } }
+    else
+      L[#L + 1] = { { string.format(fmt, item[1]), "dim" }, { item[2] } }
+    end
+  end
   return L
 end
 
@@ -677,33 +687,17 @@ end
 
 local function open_stats_window()
   local buf = maki.ui.buf()
-  local width, height = stats_window_size(padded(stats_lines()))
-  local rows = math.max(3, height - 2)
-  local offset, total = 0, 0
   local function render()
-    local all = padded(stats_lines())
-    total = #all
-    if total > rows then
-      offset = math.min(offset, total - rows)
-    else
-      offset = 0
-    end
-    local view = {}
-    for i = offset + 1, math.min(total, offset + rows) do
-      view[#view + 1] = all[i]
-    end
-    if total > rows then
-      view[#view + 1] = { { string.format("  %d/%d  j/k scroll", offset + 1, total), "dim" } }
-    end
-    buf:set_lines(view)
+    buf:set_lines(padded(stats_lines()))
   end
+  local width, height = stats_window_size(padded(stats_lines()))
   render()
   local win = maki.ui.open_win(buf, {
     title = " dcp ",
     width = width,
     height = height,
     border = "rounded",
-    footer = { { "j/k", "scroll" }, { "r", "reset" }, { "t", "toggle" }, { "q", "close" } },
+    footer = { { "t", "toggle" }, { "q", "close" } },
   })
   while win:is_open() do
     local ev = win:recv()
@@ -711,35 +705,15 @@ local function open_stats_window()
       break
     elseif ev.type == "resize" then
       width, height = stats_window_size(padded(stats_lines()))
-      rows = math.max(3, height - 2)
       win:set_config({ width = width, height = height })
-      render()
     elseif ev.type == "key" then
       local k = ev.key
       if k == "q" or k == "<Esc>" then
         break
-      elseif k == "j" or k == "<Down>" then
-        if offset + rows < total then
-          offset = offset + 1
-          render()
-        end
-      elseif k == "k" or k == "<Up>" then
-        if offset > 0 then
-          offset = offset - 1
-          render()
-        end
-      elseif k == "<C-d>" or k == "<PageDown>" then
-        offset = math.min(offset + rows, math.max(0, total - rows))
-        render()
-      elseif k == "<C-u>" or k == "<PageUp>" then
-        offset = math.max(0, offset - rows)
-        render()
-      elseif k == "r" then
-        reset_stats()
-        offset = 0
-        render()
       elseif k == "t" then
         cfg.enabled = not cfg.enabled
+        width, height = stats_window_size(padded(stats_lines()))
+        win:set_config({ width = width, height = height })
         render()
       end
     end
